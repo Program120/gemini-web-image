@@ -51,7 +51,28 @@ If the user does not specify a browser, use `brave`.
 
 ## Workflow
 
-1. Start a headless browser instance from the logged-in desktop profile:
+1. Prefer the robust end-to-end runner for normal use:
+
+```bash
+python3 {baseDir}/scripts/run_gemini_image_generation.py \
+  --browser brave \
+  --desktop-user user \
+  --prompt "<image prompt>" \
+  --output /abs/output/image.png \
+  --artifacts-dir /abs/output/run-artifacts
+```
+
+That runner is the default path for this skill. It handles:
+
+- browser startup and cleanup
+- logged-in session reuse checks
+- `Pro` + `制作图片` preparation with retries
+- page reload/open recovery when Gemini does not fully render
+- polling until the generated image is actually ready
+- export fallback when the web download button is flaky in headless mode
+- artifact capture for debugging on both success and failure
+
+2. Start a headless browser instance manually only when debugging:
 
 ```bash
 {baseDir}/scripts/start-headless-browser.sh \
@@ -69,13 +90,13 @@ The script prints JSON. Read these fields:
 - `download_dir`
 - `session`
 
-2. Connect `agent-browser` to the returned CDP port:
+3. Connect `agent-browser` to the returned CDP port:
 
 ```bash
 agent-browser --session gemini-image-run connect <port>
 ```
 
-3. Open Gemini and verify that login state was reused:
+4. Open Gemini and verify that login state was reused:
 
 ```bash
 agent-browser --session gemini-image-run open https://gemini.google.com/app
@@ -86,7 +107,7 @@ Logged-in state should show an account button similar to `Google 账号： ...`.
 
 If the snapshot shows `登录` instead, stop and tell the user that the target browser profile is not logged in or could not be decrypted in the desktop session.
 
-4. Drive the Gemini UI with the normal `agent-browser` snapshot loop:
+5. Drive the Gemini UI with the normal `agent-browser` snapshot loop:
 
 - snapshot
 - act
@@ -94,19 +115,37 @@ If the snapshot shows `登录` instead, stop and tell the user that the target b
 
 Prefer text- and role-based interactions when the label is obvious. Fall back to snapshot refs when needed.
 
-5. For image generation:
+6. For image generation, prefer the fast CDP helper before the normal snapshot loop:
 
-- open Gemini
-- open the mode selector and switch to `Pro` first
+```bash
+python3 {baseDir}/scripts/prepare_gemini_image_mode.py \
+  --cdp-port <port> \
+  --prompt "<image prompt>" \
+  --submit
+```
+
+That helper uses CDP to inspect the current Gemini page and runs the full fast path in one pass:
+
+- if `Pro` is already active, it does not reopen the mode selector
+- if `制作图片` is already selected, it does not click it again
+- if either state is missing, it performs the minimum clicks needed to make the page ready
+- it fills the main Gemini prompt box directly
+- it clicks `发送` and waits for generation to start
+- it supports both Chinese and English Gemini UI labels
+- it prints JSON with `mode_action`, `draw_action`, `prompt_action`, `submit_action`, and `elapsed_ms`
+
+If the helper fails, fall back to the normal `agent-browser` snapshot loop:
+
+- open the mode selector and switch to `Pro`
 - verify the page now shows `Pro` as the active mode before prompt submission
-- close the mode menu after selection, then re-snapshot before filling the prompt
+- select `制作图片` if it is not already selected
 - enter the image prompt in the main textbox
-- use the `制作图片` tool if it is present
 - submit the prompt
 - wait for generation to finish
 
 For this skill, treat `Pro` + `制作图片` as the required path for `Nano Banana Pro`.
 Do not rely on Gemini's current default mode.
+Do not reopen the mode selector immediately before submission if the helper already completed the fast path successfully.
 
 Useful waits:
 
@@ -115,7 +154,7 @@ Useful waits:
 - `agent-browser wait --text "下载"`
 - `agent-browser wait 3000` only as a last resort
 
-6. Download the generated image to the requested output directory.
+7. Download the generated image to the requested output directory.
 
 Prefer a direct download button in the generated result card. If a menu is required, re-snapshot after opening it, then click the download action.
 
@@ -129,7 +168,7 @@ python3 {baseDir}/scripts/save_gemini_image_from_page.py \
 
 That script reads the largest Gemini result image from the current page, resolves the in-page `blob:` URL, and writes the binary image to disk.
 
-7. Clean up when done:
+8. Clean up when done:
 
 ```bash
 {baseDir}/scripts/stop-headless-browser.sh \
@@ -144,6 +183,7 @@ Report back with:
 - which browser was used
 - whether logged-in state was successfully reused
 - absolute path of each downloaded image
+- absolute path of the run artifacts directory when the robust runner is used
 - any Gemini UI blockers encountered
 
 ## Troubleshooting
@@ -174,9 +214,10 @@ Do not rely on `agent-browser` to launch Brave directly for this workflow.
 - look for a dedicated `下载` button or a menu button near the generated image
 - if the page uses a popup menu, re-snapshot after opening the menu
 - if headless download still fails, use `scripts/save_gemini_image_from_page.py` against the active CDP port
+- prefer `scripts/run_gemini_image_generation.py` for normal use because it automatically falls back to export
 
 ### Wrong model path
 
-- always re-open the mode selector immediately before submission
-- select `Pro` again if the active mode is unclear
+- run `scripts/prepare_gemini_image_mode.py` again first
+- if the helper cannot confirm the state, re-open the mode selector and select `Pro` manually
 - only then proceed with `制作图片` prompt submission

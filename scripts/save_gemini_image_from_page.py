@@ -100,22 +100,50 @@ def main() -> int:
         } catch (err) {
         }
       }
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        throw new Error("Could not get 2D canvas context.");
+      const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error || new Error("Could not read image blob."));
+        reader.readAsDataURL(blob);
+      });
+
+      try {
+        const response = await fetch(img.currentSrc || img.src, {credentials: "include"});
+        if (!response.ok) {
+          throw new Error(`Fetch failed with status ${response.status}`);
+        }
+        const blob = await response.blob();
+        const dataUrl = await blobToDataUrl(blob);
+        return {
+          alt: img.alt || "",
+          width: img.naturalWidth,
+          height: img.naturalHeight,
+          src: img.src,
+          mime: blob.type || "image/png",
+          strategy: "fetch",
+          dataUrl,
+        };
+      } catch (fetchError) {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          throw new Error("Could not get 2D canvas context.");
+        }
+        ctx.drawImage(img, 0, 0);
+        const dataUrl = canvas.toDataURL("image/png");
+        return {
+          alt: img.alt || "",
+          width: img.naturalWidth,
+          height: img.naturalHeight,
+          src: img.src,
+          mime: "image/png",
+          strategy: "canvas",
+          fetchError: String(fetchError),
+          dataUrl,
+        };
       }
-      ctx.drawImage(img, 0, 0);
-      const dataUrl = canvas.toDataURL("image/png");
-      return {
-        alt: img.alt || "",
-        width: img.naturalWidth,
-        height: img.naturalHeight,
-        src: img.src,
-        dataUrl,
-      };
     })()
     """
     image_info = _evaluate(page["webSocketDebuggerUrl"], expression, args.cdp_port)
@@ -129,6 +157,8 @@ def main() -> int:
                 "height": image_info["height"],
                 "alt": image_info["alt"],
                 "source_url": image_info["src"],
+                "mime": image_info.get("mime", ""),
+                "strategy": image_info.get("strategy", ""),
                 "page_url": page["url"],
             },
             ensure_ascii=False,
